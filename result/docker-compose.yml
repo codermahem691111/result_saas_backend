@@ -1,0 +1,54 @@
+name: school-result
+
+# MongoDB lives in Atlas (already a managed 3-node replica set), so no Mongo containers here.
+x-result: &result
+  build: .
+  restart: unless-stopped
+  environment: &result-env
+    PORT: 5100
+    MONGO_URI: ${MONGO_URI:?Set MONGO_URI (your Atlas connection string) in .env}
+    REDIS_URL: redis://redis:6379
+    JWT_SECRET: ${JWT_SECRET:-change-this-to-a-long-random-string}
+    CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
+    CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-900}
+  depends_on:
+    redis: { condition: service_healthy }
+
+services:
+  # ---- Load balancer: the only public entrance (http://localhost:5100) ----
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["5100:80"]
+    volumes: ["./nginx.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on:
+      result-1: { condition: service_healthy }
+      result-2: { condition: service_healthy }
+      result-3: { condition: service_healthy }
+    restart: unless-stopped
+
+  # ---- Three identical, stateless result instances ----
+  result-1:
+    <<: *result
+    environment: { <<: *result-env, INSTANCE_ID: result-1 }
+  result-2:
+    <<: *result
+    environment: { <<: *result-env, INSTANCE_ID: result-2 }
+  result-3:
+    <<: *result
+    environment: { <<: *result-env, INSTANCE_ID: result-3 }
+
+  # ---- Redis: cache + event stream ----
+  redis:
+    image: redis:7-alpine
+    # volatile-lru only evicts keys that have a TTL (cards), never the event stream
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis-data:
